@@ -94,6 +94,16 @@ Default: `false`
 
 Whether the task must finish in the given interval or will be carried over into the next interval count.
 
+##### timeout
+
+Type: `number`<br>
+Default: `undefined`<br>
+Minimum: `0`. May be `Infinity` to disable the timeout.
+
+Default per-task timeout in milliseconds. When the timeout elapses before the task settles, the promise returned by `.add()` is rejected with a `TimeoutError`, the concurrency slot is released and the queue moves on to the next task. Can be overridden for individual tasks via the `timeout` option of `.add()`.
+
+The timer starts when a task begins executing; time spent waiting in the queue does not count towards the timeout.
+
 ### queue
 
 `PQueue` instance.
@@ -118,6 +128,15 @@ Type: `number`<br>
 Default: `0`
 
 Priority of operation. Operations with greater priority will be scheduled first.
+
+##### timeout
+
+Type: `number`<br>
+Default: The `timeout` option of the queue
+
+Per-task timeout in milliseconds. Overrides the queue-level `timeout` for this task. When the timeout elapses before the task settles, the returned promise is rejected with a `TimeoutError` (exported by this package) and the queue moves on. A task that settles after its timeout cannot change the queue state again.
+
+The timer starts when the task begins executing; time spent waiting in the queue does not count towards the timeout. Set to `Infinity` to disable the timeout for the task.
 
 #### .addAll(fns, [options])
 
@@ -154,6 +173,13 @@ Size of the queue.
 #### .pending
 
 Number of pending promises.
+
+#### .concurrency
+
+Type: `number`<br>
+Minimum: `1`
+
+Concurrency limit. Can be changed while the queue is running; increasing it starts queued tasks immediately.
 
 #### .isPaused
 

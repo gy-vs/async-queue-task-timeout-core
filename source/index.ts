@@ -2,6 +2,7 @@ import EventEmitter from 'eventemitter3';
 import {Queue} from './queue';
 import PriorityQueue from './priority-queue';
 import {QueueAddOptions, DefaultAddOptions, Options} from './options';
+import TimeoutError from './timeout-error';
 
 type ResolveFunction<T = void> = (value?: T | PromiseLike<T>) => void;
 
@@ -10,6 +11,8 @@ type Task<TaskResultType> =
 		| (() => TaskResultType);
 
 const empty = (): void => {};
+
+export {TimeoutError};
 
 /**
 Promise queue with concurrency control.
@@ -31,13 +34,15 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 
 	private _timeoutId?: NodeJS.Timeout;
 
+	private readonly _timeout?: number;
+
 	private _queue: QueueType;
 
 	private readonly _queueClass: new () => QueueType;
 
 	private _pendingCount = 0;
 
-	private readonly _concurrency: number;
+	private _concurrency: number;
 
 	private _paused: boolean;
 
@@ -71,10 +76,15 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 			throw new TypeError(`Expected \`interval\` to be a finite number >= 0, got \`${options.interval}\` (${typeof options.interval})`);
 		}
 
+		if (options.timeout !== undefined && !(typeof options.timeout === 'number' && options.timeout >= 0)) {
+			throw new TypeError(`Expected \`timeout\` to be a number from 0 and up, got \`${options.timeout}\` (${typeof options.timeout})`);
+		}
+
 		this._carryoverConcurrencyCount = options.carryoverConcurrencyCount!;
 		this._isIntervalIgnored = options.intervalCap === Infinity || options.interval === 0;
 		this._intervalCap = options.intervalCap;
 		this._interval = options.interval;
+		this._timeout = options.timeout;
 
 		this._queue = new options.queueClass!();
 		this._queueClass = options.queueClass!;
@@ -197,6 +207,25 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 	}
 
 	/**
+	Concurrency limit.
+
+	Minimum: `1`.
+	*/
+	get concurrency(): number {
+		return this._concurrency;
+	}
+
+	set concurrency(newConcurrency: number) {
+		if (!(typeof newConcurrency === 'number' && newConcurrency >= 1)) {
+			throw new TypeError(`Expected \`concurrency\` to be a number from 1 and up, got \`${newConcurrency}\` (${typeof newConcurrency})`);
+		}
+
+		this._concurrency = newConcurrency;
+		// eslint-disable-next-line no-empty
+		while (this.tryToStartAnother()) {}
+	}
+
+	/**
 	Adds a sync or async task to the queue. Always returns a promise.
 	*/
 	async add<TaskResultType>(fn: Task<TaskResultType>, options?: EnqueueOptionsType): Promise<TaskResultType> {
@@ -205,10 +234,42 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 				this._pendingCount++;
 				this._intervalCount++;
 
+				// The task-level timeout overrides the queue-level one. The check is
+				// intentionally not truthy-based: `0` and `Infinity` are valid values.
+				const timeout = (options === undefined || options.timeout === undefined) ? this._timeout : options.timeout;
+
+				let timeoutId: NodeJS.Timeout | undefined;
+
 				try {
-					resolve(await fn());
+					let operation = Promise.resolve(fn());
+
+					if (timeout !== undefined && timeout !== Infinity) {
+						// The timer is bound to this moment, when the task actually
+						// starts executing. Time spent waiting in the queue does not
+						// count towards the timeout.
+						// eslint-disable-next-line promise/param-names
+						const timeoutPromise = new Promise<never>((_resolve, rejectTimeout) => {
+							timeoutId = setTimeout(
+								() => {
+									rejectTimeout(new TimeoutError(`Task timed out after ${timeout} milliseconds`));
+								},
+								timeout
+							);
+						});
+
+						// `Promise.race` keeps a handler on the task promise, so a task
+						// that settles after its timeout cannot settle the operation a
+						// second time and never produces an unhandled rejection.
+						operation = Promise.race([operation, timeoutPromise]);
+					}
+
+					resolve(await operation);
 				} catch (error) {
 					reject(error);
+				} finally {
+					if (timeoutId !== undefined) {
+						clearTimeout(timeoutId);
+					}
 				}
 
 				this.next();
