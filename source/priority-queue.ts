@@ -10,7 +10,7 @@ export default class PriorityQueue implements Queue<PriorityQueueOptions> {
 	// eslint-disable-next-line @typescript-eslint/array-type
 	private readonly _queue: Array<PriorityQueueOptions & {run: RunFunction}> = [];
 
-	enqueue(run: RunFunction, options?: PriorityQueueOptions): void {
+	enqueue(run: RunFunction, options?: Partial<PriorityQueueOptions>): void {
 		options = {
 			priority: 0,
 			...options

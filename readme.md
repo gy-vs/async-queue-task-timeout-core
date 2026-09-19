@@ -94,6 +94,13 @@ Default: `false`
 
 Whether the task must finish in the given interval or will be carried over into the next interval count.
 
+##### timeout
+
+Type: `number`<br>
+Default: `Infinity`
+
+Per-operation timeout in milliseconds. When a task runs longer than this, its promise rejects with a `TimeoutError`. The timer starts when the task actually starts running, so time spent waiting in the queue does not count. `0` and `Infinity` disable the timeout. Can be overridden per task.
+
 ### queue
 
 `PQueue` instance.
@@ -118,6 +125,31 @@ Type: `number`<br>
 Default: `0`
 
 Priority of operation. Operations with greater priority will be scheduled first.
+
+##### timeout
+
+Type: `number`<br>
+Default: The queue-level [`timeout`](#timeout) option
+
+Per-operation timeout in milliseconds, overriding the queue-level default. `0` and `Infinity` disable the timeout for this task (an explicit `undefined` or omitting the option means "use the queue default").
+
+```js
+const PQueue = require('p-queue');
+const {TimeoutError} = require('p-queue');
+
+const queue = new PQueue({timeout: 100});
+
+// Resolves normally, despite the 100ms queue default.
+queue.add(longRunningTask, {timeout: Infinity});
+
+// Rejects with a TimeoutError after 50ms; the concurrency slot is released.
+queue.add(anotherTask, {timeout: 50})
+	.catch(error => {
+		if (error instanceof TimeoutError) {
+			// Timed out
+		}
+	});
+```
 
 #### .addAll(fns, [options])
 

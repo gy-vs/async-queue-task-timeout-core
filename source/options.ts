@@ -1,6 +1,16 @@
 import {Queue} from './queue';
 
 export interface QueueAddOptions {
+	/**
+	Per-operation timeout in milliseconds. When a task runs longer than this,
+	its promise rejects with `TimeoutError`. The timer starts when the task
+	actually starts running, not when it is enqueued.
+
+	`0` and `Infinity` disable the timeout. Overrides the queue-level
+	`timeout` option unless it is `undefined`.
+	*/
+	readonly timeout?: number;
+
 	readonly [key: string]: unknown;
 }
 
@@ -50,9 +60,21 @@ export interface Options<QueueType extends Queue<QueueOptions>, QueueOptions ext
 	@default false
 	*/
 	readonly carryoverConcurrencyCount?: boolean;
+
+	/**
+	Per-operation timeout in milliseconds. When a task runs longer than this,
+	its promise rejects with `TimeoutError`. The timer starts when the task
+	actually starts running, not when it is enqueued.
+
+	Can be overridden per task via the `add()` options. `0` and `Infinity`
+	disable the timeout.
+
+	@default Infinity
+	*/
+	readonly timeout?: number;
 }
 
-export interface DefaultAddOptions {
+export interface DefaultAddOptions extends QueueAddOptions {
 	/**
 	Priority of operation. Operations with greater priority will be scheduled first.
 

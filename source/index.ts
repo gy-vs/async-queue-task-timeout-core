@@ -2,6 +2,7 @@ import EventEmitter from 'eventemitter3';
 import {Queue} from './queue';
 import PriorityQueue from './priority-queue';
 import {QueueAddOptions, DefaultAddOptions, Options} from './options';
+import TimeoutError from './timeout-error';
 
 type ResolveFunction<T = void> = (value?: T | PromiseLike<T>) => void;
 
@@ -39,6 +40,8 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 
 	private readonly _concurrency: number;
 
+	private readonly _timeout: number;
+
 	private _paused: boolean;
 
 	private _resolveEmpty: ResolveFunction = empty;
@@ -56,6 +59,7 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 			concurrency: Infinity,
 			autoStart: true,
 			queueClass: PriorityQueue,
+			timeout: Infinity,
 			...options
 		} as Options<QueueType, EnqueueOptionsType>;
 
@@ -71,6 +75,10 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 			throw new TypeError(`Expected \`interval\` to be a finite number >= 0, got \`${options.interval}\` (${typeof options.interval})`);
 		}
 
+		if (!(typeof options.timeout === 'number' && options.timeout >= 0)) {
+			throw new TypeError(`Expected \`timeout\` to be a number >= 0, got \`${options.timeout}\` (${typeof options.timeout})`);
+		}
+
 		this._carryoverConcurrencyCount = options.carryoverConcurrencyCount!;
 		this._isIntervalIgnored = options.intervalCap === Infinity || options.interval === 0;
 		this._intervalCap = options.intervalCap;
@@ -79,6 +87,7 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 		this._queue = new options.queueClass!();
 		this._queueClass = options.queueClass!;
 		this._concurrency = options.concurrency;
+		this._timeout = options.timeout;
 		this._paused = options.autoStart === false;
 	}
 
@@ -198,16 +207,76 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 
 	/**
 	Adds a sync or async task to the queue. Always returns a promise.
+
+	The task-level `timeout` option overrides the queue-level default. The
+	timeout is measured from the moment the task actually starts running, so
+	time spent waiting in the queue does not count.
 	*/
-	async add<TaskResultType>(fn: Task<TaskResultType>, options?: EnqueueOptionsType): Promise<TaskResultType> {
+	async add<TaskResultType>(fn: Task<TaskResultType>, options: Partial<EnqueueOptionsType> = {}): Promise<TaskResultType> {
+		// An explicit `undefined` check (not a truthy check) so a task-level
+		// `timeout: 0` is honored as "disabled" instead of falling back to the
+		// queue default.
+		const timeout = options.timeout === undefined ? this._timeout : options.timeout;
+
+		if (!(typeof timeout === 'number' && timeout >= 0)) {
+			throw new TypeError(`Expected \`timeout\` to be a number >= 0, got \`${timeout}\` (${typeof timeout})`);
+		}
+
 		return new Promise<TaskResultType>((resolve, reject) => {
+			let timeoutId: NodeJS.Timeout | undefined;
+			// Guarantees the returned promise and the queue's bookkeeping
+			// settle exactly once, no matter whether the task or the timer
+			// settles first.
+			let settled = false;
+
 			const run = async (): Promise<void> => {
 				this._pendingCount++;
 				this._intervalCount++;
 
+				// Arm the timer here: `run` is invoked at the moment the task
+				// leaves the queue and starts executing. Queueing delay is not
+				// counted. `0` and `Infinity` disable the timer.
+				if (timeout !== 0 && timeout !== Infinity) {
+					timeoutId = setTimeout(() => {
+						if (settled) {
+							return;
+						}
+
+						settled = true;
+						reject(new TimeoutError(`Promise timed out after ${timeout} milliseconds`));
+
+						// Free the concurrency slot and start queued work.
+						this.next();
+					}, timeout);
+				}
+
 				try {
-					resolve(await fn());
+					const result = await fn();
+
+					if (settled) {
+						// The task already timed out: its late resolve must not
+						// change the returned promise or the queue state.
+						return;
+					}
+
+					settled = true;
+					if (timeoutId !== undefined) {
+						clearTimeout(timeoutId);
+					}
+
+					resolve(result);
 				} catch (error) {
+					if (settled) {
+						// The task already timed out: swallow the late rejection
+						// so it cannot become an unhandled rejection.
+						return;
+					}
+
+					settled = true;
+					if (timeoutId !== undefined) {
+						clearTimeout(timeoutId);
+					}
+
 					reject(error);
 				}
 
@@ -319,3 +388,5 @@ export default class PQueue<QueueType extends Queue<EnqueueOptionsType> = Priori
 		return this._paused;
 	}
 }
+
+export {TimeoutError};
